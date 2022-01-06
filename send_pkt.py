@@ -1,4 +1,3 @@
-
 from winpcapy import WinPcapUtils
 
 def send(src,dst,protocol,data):
@@ -162,7 +161,7 @@ def arp(self):
 dstlist = arp()
 
 class TelnetLayer2:
-    def __init__(self,srcip,dstip,dstmac):
+    def __init__(self,srcmac,srcip,dstmac,dstip,iface):
         # self.mac, self.iface = iface_ip_get_mac('192.168.100.10')
         self.srcip = srcip
         self.dstip = dstip
@@ -304,11 +303,19 @@ if len(ans):
     pkt1['TCP'].dport = ans[0].query['TCP'].dport
     ans, unans = srp(pkt1,retry=3,iface='乙太網路',filter='tcp',timeout=1)
 
+from scapy.all import * 
+import codecs
+
+def iface_ip_get_mac(ip):
+    for i in list(conf.ifaces.__dict__['data'].values()):
+        if conf.ifaces.dev_from_name(i).ip == ip: return (conf.ifaces.dev_from_name(i).mac, conf.ifaces.dev_from_name(i).name)
+    return False
+
 class TelnetLayer2:
-    def __init__(self,srcip,dstip,dstmac):
-        # self.options = [('MSS', 1460), ('NOP', 0), ('WScale', 8), ('NOP', 0), ('NOP', 0), ('SAckOK', '' )]
+    def __init__(self,srcmac,srcip,dstmac,dstip,iface):
         self.options = []
-        self.pkt = Ether(src='98:fa:9b:44:c2:a2',dst=dstmac)/IP(src='192.168.100.10',dst='192.168.100.1',flags=0x2)/TCP(flags=0x2,options=self.options)
+        self.iface = iface
+        self.pkt = Ether(src=srcmac,dst=dstmac)/IP(src=srcip,dst=dstip,flags=0x2)/TCP(flags=0x2,options=self.options)
         self.pkt['IP'].id = random.randint(0,2**10-1)
         # pkt['IP'].id = 545
         self.pkt['IP'].ttl = 128
@@ -318,12 +325,11 @@ class TelnetLayer2:
         self.pkt['TCP'].window = 64240
         self.pkt['TCP'].seq = random.randint(0,2**32-1)
         self.ans, self.unans = 0, 0
-        self.data = b''
-        self.sniff = AsyncSniffer(iface='乙太網路', prn=lambda x: self.parsing(x),filter="tcp",lfilter=lambda d: d.src == '20:6a:94:57:6e:7b')
+        self.data = ''
+        self.sniff = AsyncSniffer(iface=self.iface, prn=lambda x: self.parsing(x),filter="tcp",lfilter=lambda d: d.src == dstmac)
         self.sniff.start()
         time.sleep(0.5)
         self.spkt([('MSS', 1460), ('NOP', 0), ('WScale', 8), ('NOP', 0), ('NOP', 0), ('SAckOK', '' )],0x2)
-        # self.spkt([],0x18,'fffb01fffc21fffd01fffd03')
         time.sleep(1)
     def parsing(self,p):
         self.pkt['TCP'].seq = p['TCP'].ack
@@ -335,18 +341,21 @@ class TelnetLayer2:
         self.pkt['TCP'].window = 256
         self.pkt['IP'].id += 1
         if 'Raw' in p and b'\\xff\\xfd\x01\\xff\\xfd!\\xff\\xfb\x01\\xff\\xfb\x03' not in p[Raw].load:
-            self.data += p[Raw].load
-            self.data.replace(b'\xff\xfd\x01\xff\xfd!\xff\xfb\x01\xff\xfb\x03',b'')
+            if b'\xff\xfb\x03' in p[Raw].load:
+                self.data += p[Raw].load.split(b'\xff\xfb\x03')[-1].decode()
+            else:
+                self.data += p[Raw].load.decode()
         if 'Raw' in p and b'\\xff\\xfd\x01\\xff\\xfd!\\xff\\xfb\x01\\xff\\xfb\x03' in p[Raw].load:
             self.spkt([],0x18,'fffb01fffc21fffd01fffd03')
         if p.dataofs==5 and 'Padding' in p:
             pass
-        if 'SA' in p.flags and p.dataofs==8:
+        if 'SA' in p[TCP].flags and p.dataofs==8:
             self.spkt([],0x10)
-        if 'DF'in p.flags:
+        if 'DF' in p.flags:
             self.spkt([],0x10)
-        if 'FA'in p.flags:
-            self.spkt([],0x10)
+        if 'FA' in p[TCP].flags:
+            self.spkt([],0x14)
+            self.close()
     def _decorator(foo):
         def update(self, options, flags, payload=''):
             self.pkt['TCP'].options = options
@@ -384,17 +393,23 @@ class TelnetLayer2:
         self.flags = flags
         self.flags = payload
         # self.ans, self.unans = srp(self.pkt,iface='乙太網路',filter='tcp',timeout=1,verbose=False)
-        sendp(self.pkt,iface='乙太網路',verbose=False)
+        sendp(self.pkt,iface=self.iface,verbose=False)
     def close(self):
         t.spkt([],0x14)
+        self.sniff.stop()
+        self.data=''
     def __repr__(self):
-        return self.data.decode()
+        return self.data
     def __call__(self):
-        return self.data.decode()
+        return self.data
     def __str__(self):
-        return self.data.decode()
+        return self.data
     def __lshift__(self,data):
         self.spkt([],0x18,codecs.encode("{}\r".format(data).encode(), "hex").decode())
+    def __del__(self,data):
+        try:
+            self.sniff.stop()
+        except: pass
 
 srp(Ether(src='98:fa:9b:44:c2:a2',dst='20:6a:94:57:6e:7b')/IP(src='192.168.100.10',dst='192.168.100.1')/ARP(),retry=3,iface='乙太網路',filter='tcp',timeout=1)
 srp(Ether(src='98:fa:9b:44:c2:a2',dst='00:50:F1:21:00:10')/IP(src='192.168.100.10',dst='192.168.100.1')/ARP(),retry=3,iface='乙太網路',filter='tcp',timeout=1)
@@ -402,13 +417,13 @@ srp(Ether(src='98:fa:9b:44:c2:a2',dst='00:50:F1:21:00:10')/IP(src='192.168.100.1
 a = srp(Ether(src='98:fa:9b:44:c2:a2', dst='fa:1d:0f:b4:8d:d2')/ARP(hwsrc='98:fa:9b:44:c2:a2', hwdst='fa:1d:0f:b4:8d:d2', psrc='192.168.100.10', pdst='192.168.100.1'), iface='乙太網路', verbose = False)
 a[0][ARP].show()
 
-a = srp(Ether(src='98:fa:9b:44:c2:a2', dst='20:6a:94:57:6e:7b')/ARP(hwsrc='98:fa:9b:44:c2:a2', hwdst='20:6a:94:57:6e:7b', psrc='192.168.100.10', pdst='192.168.100.1'), iface='乙太網路', verbose = False)
-a[0][ARP].show()
+b = srp(Ether(src='98:fa:9b:44:c2:a2', dst='20:6a:94:57:6e:7b')/ARP(hwsrc='98:fa:9b:44:c2:a2', hwdst='20:6a:94:57:6e:7b', psrc='192.168.100.10', pdst='192.168.100.1'), iface='乙太網路', verbose = False)
+b[0][ARP].show()
 
 ans, unans = srp(Ether(dst="20:6a:94:57:6e:7b")/ARP(pdst="192.168.100.1"),timeout=2)
 
-t = TelnetLayer2(1,1,'20:6a:94:57:6e:7b')
-t1 = TelnetLayer2(1,1,'fa:1d:0f:b4:8d:d2')
+t = TelnetLayer2('98:fa:9b:44:c2:a2','192.168.100.10','20:6a:94:57:6e:7b','192.168.100.1','乙太網路')
+t1 = TelnetLayer2('98:fa:9b:44:c2:a2','192.168.100.10','fa:1d:0f:b4:8d:d2','192.168.100.1','乙太網路')
 
 def hello(p):
     print(p.dataofs)
